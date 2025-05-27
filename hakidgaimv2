@@ -11,7 +11,7 @@ local AimingEnabled = false
 
 -- FOV Circle Config
 local CircleRadius = 250
-local Gravity = 42.12
+local Gravity = 49.19
 local BulletSpeed = 1600
 local TargetPlayer = nil
 
@@ -118,7 +118,6 @@ local function aimAtTarget()
 		local aimPosition = Vector2.new(screenPoint.X, screenPoint.Y)
 		local delta = aimPosition - screenCenter
 
-		-- Clamp to avoid overflicking
 		local clampedDelta = Vector2.new(
 			math.clamp(delta.X, -50, 50),
 			math.clamp(delta.Y, -50, 50)
