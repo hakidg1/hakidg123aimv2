@@ -1,1 +1,176 @@
+local Players = game:GetService("Players")
+local TweenService = game:GetService("TweenService")
+local UserInputService = game:GetService("UserInputService")
+local RunService = game:GetService("RunService")
+local Workspace = game:GetService("Workspace")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
+local LocalPlayer = Players.LocalPlayer
+local Camera = Workspace.CurrentCamera
+
+-- CONFIGURABLE CONSTANTS
+local CircleRadius = 170
+local BulletSpeed = 2200 -- fallback
+local GRAVITY = Workspace.Gravity
+local VELOCITY_MULTIPLIER = 1.12
+local GRAVITY_COMPENSATION = 1.15
+local OriginalCircleColor = Color3.fromRGB(107, 98, 155)
+local CircleVisible = false
+
+-- Runtime Vars
+local TargetPlayer = nil
+local RightMouseButtonHeld = false
+local AimingEnabled = false
+
+-- Drawing FOV Circle
+local Circle = Drawing.new("Circle")
+Circle.Visible = true
+Circle.Thickness = 1
+Circle.NumSides = 50
+Circle.Radius = CircleRadius
+Circle.Filled = false
+Circle.Transparency = 0.5
+Circle.Color = OriginalCircleColor
+
+-- Drawing Debug Line
+local DebugLine = Drawing.new("Line")
+DebugLine.Thickness = 1
+DebugLine.Transparency = 0.8
+DebugLine.Visible = false
+
+-- Get held weapon name
+local function getHeldItemName(player)
+	local current = player:FindFirstChild("CurrentSelectedObject")
+	if current and current.Value then
+		return current.Value.Name
+	end
+	return nil
+end
+
+-- Get bullet speed from GunData
+local function getBulletSpeed(player)
+	local weaponName = getHeldItemName(player)
+	if weaponName then
+		local gunStats = ReplicatedStorage:FindFirstChild("GunData"):FindFirstChild(weaponName)
+		if gunStats and gunStats:FindFirstChild("Stats") then
+			local bulletSettings = gunStats.Stats:FindFirstChild("BulletSettings")
+			if bulletSettings and bulletSettings:FindFirstChild("BulletSpeed") then
+				return bulletSettings.BulletSpeed.Value
+			end
+		end
+	end
+	return BulletSpeed
+end
+
+-- Update FOV Circle position
+local function updateCirclePosition()
+	local screenSize = Camera.ViewportSize
+	Circle.Position = Vector2.new(screenSize.X / 2, screenSize.Y / 2)
+	Circle.Color = CircleVisible and OriginalCircleColor or Color3.fromHSV((tick() % 5) / 5, 1, 1)
+end
+
+-- Visibility and FOV check
+local function isPlayerVisible(player)
+	if player.Character and player.Character:FindFirstChild("ServerColliderHead") then
+		local screenPos = Camera:WorldToViewportPoint(player.Character.ServerColliderHead.Position)
+		return screenPos.Z > 0
+	end
+	return false
+end
+
+local function isInFOV(player)
+	local screenCenter = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
+	local headPosition = Camera:WorldToViewportPoint(player.Character.ServerColliderHead.Position)
+	return (Vector2.new(headPosition.X, headPosition.Y) - screenCenter).Magnitude <= CircleRadius
+end
+
+-- Predict with velocity + gravity
+local function predictFuturePosition(head, velocity, bulletSpeed)
+	local distance = (head.Position - Camera.CFrame.Position).Magnitude
+	local time = distance / bulletSpeed
+	local predictedPos = head.Position + (velocity * time * VELOCITY_MULTIPLIER)
+	local drop = Vector3.new(0, 0.5 * GRAVITY * (time ^ 2) * GRAVITY_COMPENSATION, 0)
+	return predictedPos + drop
+end
+
+-- Target selection
+local function findNearestTargetToCenter()
+	local screenCenter = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
+	local closest = nil
+	local minDist = math.huge
+
+	for _, player in ipairs(Players:GetPlayers()) do
+		if player ~= LocalPlayer and player.Character and isPlayerVisible(player) and isInFOV(player) then
+			local headPos = player.Character.ServerColliderHead.Position
+			local screenPos = Camera:WorldToViewportPoint(headPos)
+			local dist = (Vector2.new(screenPos.X, screenPos.Y) - screenCenter).Magnitude
+			if dist < minDist then
+				minDist = dist
+				closest = player
+			end
+		end
+	end
+
+	return closest
+end
+
+-- Aim at predicted position
+local function aimAtTarget()
+	if not TargetPlayer or not TargetPlayer.Character then return end
+	local head = TargetPlayer.Character:FindFirstChild("ServerColliderHead")
+	if not head then return end
+
+	local bulletSpeed = getBulletSpeed(LocalPlayer)
+	local predictedPos = predictFuturePosition(head, head.Velocity or Vector3.zero, bulletSpeed)
+	local screenPoint, onScreen = Camera:WorldToViewportPoint(predictedPos)
+
+	if RightMouseButtonHeld and AimingEnabled and onScreen then
+		local screenCenter = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
+		local delta = Vector2.new(screenPoint.X, screenPoint.Y) - screenCenter
+		local clampedDelta = Vector2.new(math.clamp(delta.X, -50, 50), math.clamp(delta.Y, -50, 50))
+		mousemoverel(clampedDelta.X, clampedDelta.Y)
+	end
+end
+
+-- Debug line
+local function updateDebugLine()
+	if TargetPlayer and TargetPlayer.Character then
+		local head = TargetPlayer.Character:FindFirstChild("ServerColliderHead")
+		if head then
+			local bulletSpeed = getBulletSpeed(LocalPlayer)
+			local predictedPos = predictFuturePosition(head, head.Velocity or Vector3.zero, bulletSpeed)
+			local screenFrom = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
+			local screenTo3D = Camera:WorldToViewportPoint(predictedPos)
+			DebugLine.From = screenFrom
+			DebugLine.To = Vector2.new(screenTo3D.X, screenTo3D.Y)
+			DebugLine.Visible = true
+			DebugLine.Color = Color3.fromHSV((tick() % 5) / 5, 1, 1)
+		else
+			DebugLine.Visible = false
+		end
+	else
+		DebugLine.Visible = false
+	end
+end
+
+-- Input
+UserInputService.InputBegan:Connect(function(input)
+	if input.UserInputType == Enum.UserInputType.MouseButton2 then
+		RightMouseButtonHeld = true
+		AimingEnabled = true
+	end
+end)
+UserInputService.InputEnded:Connect(function(input)
+	if input.UserInputType == Enum.UserInputType.MouseButton2 then
+		RightMouseButtonHeld = false
+		AimingEnabled = false
+	end
+end)
+
+-- Main loop
+RunService.RenderStepped:Connect(function()
+	updateCirclePosition()
+	TargetPlayer = findNearestTargetToCenter()
+	updateDebugLine()
+	aimAtTarget()
+end)
